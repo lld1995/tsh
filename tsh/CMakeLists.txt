@@ -6,6 +6,8 @@ if( CMAKE_BUILD_TYPE STREQUAL Debug)
 	add_compile_definitions(DEBUG)
 endif()
 
+set(CMAKE_EXE_LINKER_FLAGS -static)
+
 # 将源代码添加到此项目的可执行文件。
 add_executable (tsh "tsh.c" "pel.c" "aes.c" "sha1.c")
 
