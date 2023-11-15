@@ -297,7 +297,11 @@ int pel_recv_msg( int sockfd, unsigned char *msg, int *length )
 
     ret = pel_recv_all( sockfd, buffer, 16, 0 );
 
-    if( ret != PEL_SUCCESS ) return( PEL_FAILURE );
+    if (ret != PEL_SUCCESS) {
+        *length = 0;
+        msg[0] = 0;
+        return PEL_FAILURE ;
+    }
 
     /* decrypt this block and extract the message length */
 

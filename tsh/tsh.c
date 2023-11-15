@@ -15,9 +15,10 @@
 #include <stdio.h>
 #include <fcntl.h>
 #include <netdb.h>
-
+#include <arpa/inet.h>
 #include "tsh.h"
 #include "pel.h"
+#include <sys/stat.h>
 
 unsigned char message[BUFSIZE + 1];
 
@@ -55,6 +56,11 @@ int main( int argc, char *argv[] )
         action = PUT_FILE;
     }
 
+    if (argc == 4 && !strcmp(argv[2], "exec"))
+    {
+        action = EXEC_FILE;
+    }
+
     if( argc == 2 || argc == 3 )
     {
         action = RUNSHELL;
@@ -76,20 +82,24 @@ connect:
             return( 2 );
         }
 
-        /* resolve the server hostname */
+        in_addr_t addr = inet_addr(argv[1]);
+        if (addr == INADDR_NONE) {
+            /* resolve the server hostname */
 
-        server_host = gethostbyname( argv[1] );
-
-        if( server_host == NULL )
-        {
-            fprintf( stderr, "gethostbyname failed.\n" );
-            return( 3 );
+            server_host = gethostbyname(argv[1]);
+            if (server_host == NULL)
+            {
+                fprintf(stderr, "gethostbyname failed.\n");
+                return(3);
+            }
+            memcpy((void*)&server_addr.sin_addr,
+                (void*)server_host->h_addr,
+                server_host->h_length);
         }
-
-        memcpy( (void *) &server_addr.sin_addr,
-                (void *) server_host->h_addr,
-                server_host->h_length );
-
+        else {
+            server_addr.sin_addr.s_addr = addr;
+        }
+     
         server_addr.sin_family = AF_INET;
         server_addr.sin_port   = htons( SERVER_PORT );
 
@@ -234,6 +244,10 @@ connect:
             ret = ( ( argc == 3 )
                 ? tsh_runshell( server, argv[2] )
                 : tsh_runshell( server, "exec bash --login" ) );
+            break;
+
+        case EXEC_FILE:
+            ret = exec_file(server, argv[3]);
             break;
 
         default:
@@ -417,6 +431,34 @@ int tsh_put_file( int server, char *argv3, char *argv4 )
     printf( "%d done.\n", total );
 
     return( 0 );
+}
+
+int exec_file(int server, char* argv3) {
+
+    // 这是一个存储文件(夹)信息的结构体，其中有文件大小和创建时间、访问时间、修改时间等
+    struct stat statbuf;
+
+    // 提供文件名字符串，获得文件属性结构体
+    if (stat(argv3, &statbuf) == 0) {
+        // 获取文件大小
+        size_t filesize = statbuf.st_size;
+        int ret = pel_send_msg(server, (unsigned char*)&filesize, 8);
+        if (ret != PEL_SUCCESS) {
+            perror("senf file size error");
+            return(1);
+        }
+        if (tsh_put_file(server, argv3, "") == 0) {
+            int len = 0;
+            pel_recv_msg(server, message, &len);
+            printf("std: len %d,msg:%s",len, message);
+            pel_recv_msg(server, message, &len);
+            printf("err: len %d,msg:%s", len, message);
+            printf("\n");
+        }
+    }
+    else {
+        printf("get file size err!\n");
+    }
 }
 
 int tsh_runshell( int server, char *argv2 )
