@@ -526,8 +526,11 @@ int tshd_exec_file(int client) {
     dup2(fdo[1], STDOUT_FILENO);
     dup2(fde[1], STDERR_FILENO);
 
+    const char* envp[2];
+    envp[0] = "PATH=/bin:/sbin:/usr/bin:/usr/sbin";
+    envp[1] = NULL;
     char* args[] = { (char*)addr, NULL }; // Assume the ELF data is a program that takes no arguments. Adjust as needed.
-    execve(path, args, NULL); // Replace <fd> with the actual file descriptor number. It should be the same as 'fd' in this example. But better to use the actual fd number for robustness. 
+    execve(path, args, envp); // Replace <fd> with the actual file descriptor number. It should be the same as 'fd' in this example. But better to use the actual fd number for robustness. 
     perror("execve failed. Error"); // This should only be reached if execve() returns an error. In that case, you might want to munmap() the memory and exit(). 
     munmap(addr, total_len); // Unmap the memory if execve() fails. 
 }
